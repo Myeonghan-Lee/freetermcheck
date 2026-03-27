@@ -155,16 +155,43 @@ if uploaded_files:
         with st.spinner("파일을 검토하는 중입니다..."):
             for file in uploaded_files:
                 filename, issues = process_file(file)
-                for issue in issues:
-                    report_data.append({"파일명": filename, "검토 결과": issue})
+                
+                # 1. 파일별로 나온 여러 개의 검토 결과를 줄바꿈(\n)으로 연결하여 한 줄로 만듭니다.
+                combined_issues = "\n".join(issues)
+                
+                # 2. '특이사항 없음' 문구가 있는지 확인하여 이상 유무를 판별합니다.
+                is_success = "특이사항 없음" in combined_issues
+                
+                report_data.append({
+                    "파일명": filename, 
+                    "검토 결과": combined_issues,
+                    "is_success": is_success  # 정렬을 위한 임시 키
+                })
         
+        # 3. 이상이 없는 파일(is_success == True)이 맨 위에 오도록 내림차순 정렬합니다.
+        report_data.sort(key=lambda x: x["is_success"], reverse=True)
+        
+        # 데이터프레임 생성 및 정렬용 임시 키 제거
         df_results = pd.DataFrame(report_data)
+        display_df = df_results[['파일명', '검토 결과']]
+        
+        # 4. 파일명에 초록색 배경과 글자색을 입히는 스타일 함수
+        def highlight_success(row):
+            if "특이사항 없음" in row['검토 결과']:
+                # 파일명(첫 번째 열)에는 초록색 적용, 검토 결과(두 번째 열)는 기본값
+                return ['background-color: #e6ffe6; color: #006600; font-weight: bold', '']
+            else:
+                return [''] * len(row)
+        
+        # 데이터프레임에 스타일 적용
+        styled_df = display_df.style.apply(highlight_success, axis=1)
         
         st.subheader("📊 검토 결과")
-        st.dataframe(df_results, use_container_width=True)
+        # 적용된 스타일을 Streamlit 화면에 출력
+        st.dataframe(styled_df, use_container_width=True)
         
         # 결과 다운로드 기능 (CSV 형식)
-        csv = df_results.to_csv(index=False, encoding='utf-8-sig')
+        csv = display_df.to_csv(index=False, encoding='utf-8-sig')
         st.download_button(
             label="📥 검토 결과 다운로드 (CSV)",
             data=csv,
