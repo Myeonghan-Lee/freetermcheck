@@ -3,6 +3,7 @@ import pandas as pd
 import openpyxl
 import re
 from io import BytesIO
+from openpyxl.styles import Font, Color, Alignment, PatternFill
 
 def extract_numbers_from_bracket(text):
     """문자열에서 괄호 안의 숫자를 찾아 합산합니다."""
@@ -30,7 +31,9 @@ def process_file(file):
         filename = file.name
         
         # --- 1. 학교운영 현황 검토 ---
-        ws1 = wb.get_sheet_by_name("1.학교운영 현황") if "1.학교운영 현황" in wb.sheetnames else None
+        ws1 = wb["1.학교운영 현황"] if "1.학교운영 현황" in wb.sheetnames else None
+        theme_hours, career_hours, class_count = 0, 0, 0
+        
         if ws1:
             theme_hours = ws1['D8'].value or 0
             career_hours = ws1['D9'].value or 0
@@ -47,7 +50,7 @@ def process_file(file):
             results.append("[1.학교운영 현황] 시트를 찾을 수 없습니다.")
 
         # --- 2. 자유학기 활동 검토 ---
-        ws2 = wb.get_sheet_by_name("2. 자유학기 활동") if "2. 자유학기 활동" in wb.sheetnames else None
+        ws2 = wb["2. 자유학기 활동"] if "2. 자유학기 활동" in wb.sheetnames else None
         has_outsourced = False
         
         if ws2:
@@ -88,7 +91,7 @@ def process_file(file):
             results.append("[2. 자유학기 활동] 시트를 찾을 수 없습니다.")
 
         # --- 3. 예산 계획서 검토 ---
-        ws3 = wb.get_sheet_by_name("3. 예산 계획서") if "3. 예산 계획서" in wb.sheetnames else None
+        ws3 = wb["3. 예산 계획서"] if "3. 예산 계획서" in wb.sheetnames else None
         if ws3:
             total_budget = ws3['E3'].value or 0
             
@@ -129,9 +132,8 @@ def process_file(file):
         
     return filename, results
 
-# --- HTML 스타일 적용 함수 ---
+# --- 스타일 적용 함수 (화면 출력용 HTML) ---
 def format_issue_for_html(issue):
-    """시트 이름별로 다른 글자 색상을 적용하고 HTML 태그로 감쌉니다."""
     if "[1.학교운영 현황]" in issue:
         issue = issue.replace("[1.학교운영 현황]", "<strong style='color:#0052cc;'>[1.학교운영 현황]</strong>")
     elif "[2. 자유학기 활동]" in issue:
@@ -143,7 +145,6 @@ def format_issue_for_html(issue):
 # --- Streamlit UI ---
 st.set_page_config(page_title="자유학기 운영계획서 검토기", layout="wide")
 
-# 테이블 전체 넓이 및 테두리 스타일을 위한 CSS 주입
 st.markdown("""
 <style>
 table { width: 100%; border-collapse: collapse; }
@@ -163,14 +164,8 @@ if uploaded_files:
         with st.spinner("파일을 검토하는 중입니다..."):
             for file in uploaded_files:
                 filename, issues = process_file(file)
-                
-                # 1. 화면 출력용 (HTML, 줄바꿈 <br> 적용, 시트별 색상 적용)
                 html_issues = "<br>".join([format_issue_for_html(issue) for issue in issues])
-                
-                # 2. 엑셀 다운로드용 (순수 텍스트, 줄바꿈 \n 적용)
                 excel_issues = "\n".join([f"• {issue}" for issue in issues])
-                
-                # 3. 이상 유무 판별 (성공 여부 확인)
                 is_success = "특이사항 없음" in "".join(issues)
                 
                 report_data.append({
@@ -180,53 +175,70 @@ if uploaded_files:
                     "is_success": is_success
                 })
         
-        # 이상이 없는 파일이 맨 위에 오도록 내림차순 정렬
         report_data.sort(key=lambda x: x["is_success"], reverse=True)
-        
-        # DataFrame 생성
         df_results = pd.DataFrame(report_data)
         
-        # 화면에 표시할 칼럼만 추출
         display_df = df_results[['파일명', '검토 결과 (화면용)']].copy()
         display_df.rename(columns={'검토 결과 (화면용)': '검토 결과'}, inplace=True)
         
-        # 이상 없는 파일명에 초록색 배경을 넣는 조건부 서식
         def highlight_success(row):
             if "특이사항 없음" in row['검토 결과']:
                 return ['background-color: #e6ffe6; color: #006600; font-weight: bold', '']
             else:
                 return [''] * len(row)
         
-        # 스타일 적용 및 HTML 테이블로 변환
         styled_df = display_df.style.apply(highlight_success, axis=1)
         html_table = styled_df.hide(axis="index").to_html(escape=False)
         
         st.subheader("📊 검토 결과")
-        # 변환된 HTML 테이블을 화면에 출력
         st.markdown(html_table, unsafe_allow_html=True)
-        
         st.write("---")
         
-        # --- 엑셀 파일 다운로드 기능 ---
-        download_df = df_results[['파일명', '검토 결과 (Excel용)']].copy()
-        download_df.rename(columns={'검토 결과 (Excel용)': '검토 결과'}, inplace=True)
-        
-        # 메모리 버퍼 생성 후 엑셀 데이터 쓰기
+        # --- 엑셀 파일 생성 및 스타일링 ---
         excel_buffer = BytesIO()
         with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-            download_df.to_excel(writer, index=False, sheet_name='검토결과')
+            # 기본 데이터 저장
+            df_for_excel = df_results[['파일명', '검토 결과 (Excel용)']].copy()
+            df_for_excel.rename(columns={'검토 결과 (Excel용)': '검토 결과'}, inplace=True)
+            df_for_excel.to_excel(writer, index=False, sheet_name='검토결과')
             
-            # 엑셀 파일 내 줄바꿈(\n)이 정상적으로 보이도록 서식(Wrap Text) 적용
+            workbook = writer.book
             worksheet = writer.sheets['검토결과']
-            for row in worksheet.iter_rows(min_row=2, max_col=2):
-                for cell in row:
-                    cell.alignment = openpyxl.styles.Alignment(wrapText=True, vertical='top')
             
-            # 열 너비 조절 (가독성 향상)
+            # 스타일 정의
+            blue_font = Font(color="0052CC", bold=True) # 시트1 색상
+            green_font = Font(color="00875A", bold=True) # 시트2 색상
+            red_font = Font(color="DE350B", bold=True)   # 시트3 색상
+            success_fill = PatternFill(start_color="E6FFE6", end_color="E6FFE6", fill_type="solid")
+            success_font = Font(color="006600", bold=True)
+
+            # 데이터 행 반복 처리
+            for idx, row in enumerate(worksheet.iter_rows(min_row=2, max_col=2, max_row=len(report_data)+1)):
+                file_cell, issue_cell = row
+                
+                # 셀 기본 설정 (줄바꿈, 상단 정렬)
+                issue_cell.alignment = Alignment(wrapText=True, vertical='top')
+                file_cell.alignment = Alignment(vertical='top')
+
+                # '특이사항 없음'인 경우 행 전체 배경색 적용
+                if "특이사항 없음" in str(issue_cell.value):
+                    file_cell.fill = success_fill
+                    file_cell.font = success_font
+                    issue_cell.fill = success_fill
+                    issue_cell.font = success_font
+                else:
+                    # 텍스트 내용에 따라 셀 전체 글자 색상 우선 지정 (주요 에러 색상 기준)
+                    if "[1.학교운영 현황]" in str(issue_cell.value):
+                        issue_cell.font = Font(color="0052CC")
+                    elif "[2. 자유학기 활동]" in str(issue_cell.value):
+                        issue_cell.font = Font(color="00875A")
+                    elif "[3. 예산 계획서]" in str(issue_cell.value):
+                        issue_cell.font = Font(color="DE350B")
+
+            # 열 너비 조절
             worksheet.column_dimensions['A'].width = 30
-            worksheet.column_dimensions['B'].width = 100
+            worksheet.column_dimensions['B'].width = 110
             
-        # 다운로드 버튼
         st.download_button(
             label="📥 검토 결과 다운로드 (Excel)",
             data=excel_buffer.getvalue(),
