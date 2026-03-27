@@ -207,7 +207,9 @@ if uploaded_files:
         
         st.write("---")
         
-        # --- 엑셀 파일 다운로드 기능 ---
+# --- 엑셀 파일 다운로드 기능 ---
+        from openpyxl.styles import Font, Alignment # 상단에 추가해도 되지만 편의상 여기 위치
+
         download_df = df_results[['파일명', '검토 결과 (Excel용)']].copy()
         download_df.rename(columns={'검토 결과 (Excel용)': '검토 결과'}, inplace=True)
         
@@ -216,13 +218,37 @@ if uploaded_files:
         with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
             download_df.to_excel(writer, index=False, sheet_name='검토결과')
             
-            # 엑셀 파일 내 줄바꿈(\n)이 정상적으로 보이도록 서식(Wrap Text) 적용
+            # 스타일 적용을 위해 워크시트 가져오기
             worksheet = writer.sheets['검토결과']
-            for row in worksheet.iter_rows(min_row=2, max_col=2):
-                for cell in row:
-                    cell.alignment = openpyxl.styles.Alignment(wrapText=True, vertical='top')
             
-            # 열 너비 조절 (가독성 향상)
+            # 색상 코드 정의 (화면과 동일하게 세팅)
+            color_map = {
+                "[1.학교운영 현황]": "0052cc", # 파랑
+                "[2. 자유학기 활동]": "00875a", # 초록
+                "[3. 예산 계획서]": "de350b"   # 빨강
+            }
+            
+            for row_idx, row in enumerate(worksheet.iter_rows(min_row=2, max_col=2), start=2):
+                filename_cell = row[0]
+                result_cell = row[1]
+                
+                # 1. 공통 서식 (줄바꿈 및 정렬)
+                result_cell.alignment = Alignment(wrapText=True, vertical='top')
+                filename_cell.alignment = Alignment(vertical='top')
+
+                # 2. 내용에 따른 글자 색상 적용 (가장 먼저 발견되는 키워드 기준)
+                cell_text = str(result_cell.value)
+                
+                if "특이사항 없음" in cell_text:
+                    result_cell.font = Font(color="006600", bold=True)
+                    filename_cell.font = Font(color="006600", bold=True)
+                else:
+                    for keyword, color in color_map.items():
+                        if keyword in cell_text:
+                            result_cell.font = Font(color=color)
+                            break # 첫 번째 일치하는 카테고리 색상 적용
+
+            # 열 너비 조절
             worksheet.column_dimensions['A'].width = 30
             worksheet.column_dimensions['B'].width = 100
             
