@@ -3,8 +3,6 @@ import pandas as pd
 import openpyxl
 import re
 from io import BytesIO
-from openpyxl.cell.rich_text import RichText, TextBlock
-from openpyxl.styles import Font, Alignment
 
 def extract_numbers_from_bracket(text):
     """문자열에서 괄호 안의 숫자를 찾아 합산합니다."""
@@ -32,7 +30,7 @@ def process_file(file):
         filename = file.name
         
         # --- 1. 학교운영 현황 검토 ---
-        ws1 = wb["1.학교운영 현황"] if "1.학교운영 현황" in wb.sheetnames else None
+        ws1 = wb.get_sheet_by_name("1.학교운영 현황") if "1.학교운영 현황" in wb.sheetnames else None
         if ws1:
             theme_hours = ws1['D8'].value or 0
             career_hours = ws1['D9'].value or 0
@@ -49,7 +47,7 @@ def process_file(file):
             results.append("[1.학교운영 현황] 시트를 찾을 수 없습니다.")
 
         # --- 2. 자유학기 활동 검토 ---
-        ws2 = wb["2. 자유학기 활동"] if "2. 자유학기 활동" in wb.sheetnames else None
+        ws2 = wb.get_sheet_by_name("2. 자유학기 활동") if "2. 자유학기 활동" in wb.sheetnames else None
         has_outsourced = False
         
         if ws2:
@@ -90,7 +88,7 @@ def process_file(file):
             results.append("[2. 자유학기 활동] 시트를 찾을 수 없습니다.")
 
         # --- 3. 예산 계획서 검토 ---
-        ws3 = wb["3. 예산 계획서"] if "3. 예산 계획서" in wb.sheetnames else None
+        ws3 = wb.get_sheet_by_name("3. 예산 계획서") if "3. 예산 계획서" in wb.sheetnames else None
         if ws3:
             total_budget = ws3['E3'].value or 0
             
@@ -131,6 +129,7 @@ def process_file(file):
         
     return filename, results
 
+# --- HTML 스타일 적용 함수 ---
 def format_issue_for_html(issue):
     """시트 이름별로 다른 글자 색상을 적용하고 HTML 태그로 감쌉니다."""
     if "[1.학교운영 현황]" in issue:
@@ -144,6 +143,7 @@ def format_issue_for_html(issue):
 # --- Streamlit UI ---
 st.set_page_config(page_title="자유학기 운영계획서 검토기", layout="wide")
 
+# 테이블 전체 넓이 및 테두리 스타일을 위한 CSS 주입
 st.markdown("""
 <style>
 table { width: 100%; border-collapse: collapse; }
@@ -164,88 +164,69 @@ if uploaded_files:
             for file in uploaded_files:
                 filename, issues = process_file(file)
                 
+                # 1. 화면 출력용 (HTML, 줄바꿈 <br> 적용, 시트별 색상 적용)
                 html_issues = "<br>".join([format_issue_for_html(issue) for issue in issues])
+                
+                # 2. 엑셀 다운로드용 (순수 텍스트, 줄바꿈 \n 적용)
+                excel_issues = "\n".join([f"• {issue}" for issue in issues])
+                
+                # 3. 이상 유무 판별 (성공 여부 확인)
                 is_success = "특이사항 없음" in "".join(issues)
                 
                 report_data.append({
                     "파일명": filename, 
-                    "html_issues": html_issues,
-                    "raw_issues": issues,  # 리스트 형태로 저장 (엑셀 처리용)
+                    "검토 결과 (화면용)": html_issues,
+                    "검토 결과 (Excel용)": excel_issues,
                     "is_success": is_success
                 })
         
+        # 이상이 없는 파일이 맨 위에 오도록 내림차순 정렬
         report_data.sort(key=lambda x: x["is_success"], reverse=True)
         
-        # 화면 출력용 데이터프레임
-        display_df = pd.DataFrame([{
-            "파일명": item["파일명"],
-            "검토 결과": item["html_issues"]
-        } for item in report_data])
+        # DataFrame 생성
+        df_results = pd.DataFrame(report_data)
         
+        # 화면에 표시할 칼럼만 추출
+        display_df = df_results[['파일명', '검토 결과 (화면용)']].copy()
+        display_df.rename(columns={'검토 결과 (화면용)': '검토 결과'}, inplace=True)
+        
+        # 이상 없는 파일명에 초록색 배경을 넣는 조건부 서식
         def highlight_success(row):
             if "특이사항 없음" in row['검토 결과']:
                 return ['background-color: #e6ffe6; color: #006600; font-weight: bold', '']
-            return [''] * len(row)
+            else:
+                return [''] * len(row)
         
+        # 스타일 적용 및 HTML 테이블로 변환
         styled_df = display_df.style.apply(highlight_success, axis=1)
         html_table = styled_df.hide(axis="index").to_html(escape=False)
         
         st.subheader("📊 검토 결과")
+        # 변환된 HTML 테이블을 화면에 출력
         st.markdown(html_table, unsafe_allow_html=True)
         
         st.write("---")
         
-        # --- 엑셀 파일 다운로드 기능 (색상 적용) ---
+        # --- 엑셀 파일 다운로드 기능 ---
+        download_df = df_results[['파일명', '검토 결과 (Excel용)']].copy()
+        download_df.rename(columns={'검토 결과 (Excel용)': '검토 결과'}, inplace=True)
+        
+        # 메모리 버퍼 생성 후 엑셀 데이터 쓰기
         excel_buffer = BytesIO()
-        wb_new = openpyxl.Workbook()
-        ws_new = wb_new.active
-        ws_new.title = "검토결과"
-        
-        # 헤더 설정
-        ws_new.append(["파일명", "검토 결과"])
-        for cell in ws_new[1]:
-            cell.font = Font(bold=True)
-            cell.alignment = Alignment(horizontal='center')
-
-        # 데이터 기입 및 색상 적용
-        for idx, item in enumerate(report_data, start=2):
-            ws_new.cell(row=idx, column=1, value=item["파일명"]).alignment = Alignment(vertical='top')
+        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+            download_df.to_excel(writer, index=False, sheet_name='검토결과')
             
-            rt = RichText()
-            issues_list = item["raw_issues"]
+            # 엑셀 파일 내 줄바꿈(\n)이 정상적으로 보이도록 서식(Wrap Text) 적용
+            worksheet = writer.sheets['검토결과']
+            for row in worksheet.iter_rows(min_row=2, max_col=2):
+                for cell in row:
+                    cell.alignment = openpyxl.styles.Alignment(wrapText=True, vertical='top')
             
-            for i, issue in enumerate(issues_list):
-                full_text = f"• {issue}"
-                
-                if "[1.학교운영 현황]" in full_text:
-                    parts = full_text.split("[1.학교운영 현황]")
-                    rt.append(parts[0])
-                    rt.append(TextBlock(Font(color="0052cc", bold=True), "[1.학교운영 현황]"))
-                    rt.append(parts[1])
-                elif "[2. 자유학기 활동]" in full_text:
-                    parts = full_text.split("[2. 자유학기 활동]")
-                    rt.append(parts[0])
-                    rt.append(TextBlock(Font(color="00875a", bold=True), "[2. 자유학기 활동]"))
-                    rt.append(parts[1])
-                elif "[3. 예산 계획서]" in full_text:
-                    parts = full_text.split("[3. 예산 계획서]")
-                    rt.append(parts[0])
-                    rt.append(TextBlock(Font(color="de350b", bold=True), "[3. 예산 계획서]"))
-                    rt.append(parts[1])
-                else:
-                    rt.append(full_text)
-                
-                if i < len(issues_list) - 1:
-                    rt.append("\n")
+            # 열 너비 조절 (가독성 향상)
+            worksheet.column_dimensions['A'].width = 30
+            worksheet.column_dimensions['B'].width = 100
             
-            res_cell = ws_new.cell(row=idx, column=2)
-            res_cell.value = rt
-            res_cell.alignment = Alignment(wrapText=True, vertical='top')
-
-        ws_new.column_dimensions['A'].width = 30
-        ws_new.column_dimensions['B'].width = 100
-        wb_new.save(excel_buffer)
-        
+        # 다운로드 버튼
         st.download_button(
             label="📥 검토 결과 다운로드 (Excel)",
             data=excel_buffer.getvalue(),
