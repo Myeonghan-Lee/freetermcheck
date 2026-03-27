@@ -3,16 +3,17 @@ import pandas as pd
 import openpyxl
 import re
 from io import BytesIO
+from openpyxl.styles import PatternFill, Font, Alignment
+from openpyxl.cell.text import InlineFont
+from openpyxl.cell.rich_text import TextBlock, CellRichText
 
 def extract_numbers_from_bracket(text):
-    """문자열에서 괄호 안의 숫자를 찾아 합산합니다."""
     if not text:
         return 0
     numbers = re.findall(r'\((\d+)\)', str(text))
     return sum(int(n) for n in numbers)
 
 def evaluate_formula_string(text):
-    """문자열에서 숫자와 기호만 추출하여 계산합니다."""
     if not text:
         return 0
     try:
@@ -129,9 +130,9 @@ def process_file(file):
         
     return filename, results
 
-# --- HTML 스타일 적용 함수 ---
+
+# --- HTML 화면 출력용 서식 ---
 def format_issue_for_html(issue):
-    """시트 이름별로 다른 글자 색상을 적용하고 HTML 태그로 감쌉니다."""
     if "[1.학교운영 현황]" in issue:
         issue = issue.replace("[1.학교운영 현황]", "<strong style='color:#0052cc;'>[1.학교운영 현황]</strong>")
     elif "[2. 자유학기 활동]" in issue:
@@ -140,10 +141,37 @@ def format_issue_for_html(issue):
         issue = issue.replace("[3. 예산 계획서]", "<strong style='color:#de350b;'>[3. 예산 계획서]</strong>")
     return f"• {issue}"
 
+# --- 엑셀용 Rich Text 변환 함수 ---
+def create_excel_rich_text(issues):
+    font_sheet1 = InlineFont(color="FF0052CC", b=True)
+    font_sheet2 = InlineFont(color="FF00875A", b=True)
+    font_sheet3 = InlineFont(color="FFDE350B", b=True)
+    font_success = InlineFont(color="FF006600", b=True)
+    
+    elements = []
+    for i, issue in enumerate(issues):
+        prefix = "• "
+        suffix = "\n" if i < len(issues) - 1 else ""
+        
+        if "[1.학교운영 현황]" in issue:
+            elements.extend([prefix, TextBlock(font_sheet1, "[1.학교운영 현황]"), issue.replace("[1.학교운영 현황]", "") + suffix])
+        elif "[2. 자유학기 활동]" in issue:
+            elements.extend([prefix, TextBlock(font_sheet2, "[2. 자유학기 활동]"), issue.replace("[2. 자유학기 활동]", "") + suffix])
+        elif "[3. 예산 계획서]" in issue:
+            elements.extend([prefix, TextBlock(font_sheet3, "[3. 예산 계획서]"), issue.replace("[3. 예산 계획서]", "") + suffix])
+        elif "특이사항 없음" in issue:
+            elements.append(TextBlock(font_success, prefix + issue + suffix))
+        else:
+            elements.append(prefix + issue + suffix)
+            
+    # 빈 문자열 제거 후 CellRichText 반환
+    elements = [e for e in elements if e]
+    return CellRichText(*elements) if elements else ""
+
+
 # --- Streamlit UI ---
 st.set_page_config(page_title="자유학기 운영계획서 검토기", layout="wide")
 
-# 테이블 전체 넓이 및 테두리 스타일을 위한 CSS 주입
 st.markdown("""
 <style>
 table { width: 100%; border-collapse: collapse; }
@@ -152,80 +180,92 @@ th, td { text-align: left; padding: 12px; border: 1px solid #ddd; line-height: 1
 """, unsafe_allow_html=True)
 
 st.title("📄 자유학기 운영계획서 자동 검토 웹앱")
-st.write("여러 개의 엑셀 파일(.xlsx)을 업로드하면 운영계획서 작성 지침에 맞는지 자동으로 검토합니다.")
+st.write("여러 개의 엑셀 파일(.xlsx)을 아래 영역에 마우스로 드래그 앤 드롭하거나 클릭하여 업로드하세요.")
 
-uploaded_files = st.file_uploader("검토할 엑셀 파일들을 업로드하세요", type=['xlsx'], accept_multiple_files=True)
+# 드래그 앤 드롭을 지원하는 Streamlit 내장 파일 업로더
+uploaded_files = st.file_uploader("검토할 엑셀 파일 업로드", type=['xlsx'], accept_multiple_files=True)
 
 if uploaded_files:
     if st.button("검토 시작"):
         report_data = []
+        raw_issues_dict = {} # 엑셀 다운로드를 위한 원본 데이터 저장
         
         with st.spinner("파일을 검토하는 중입니다..."):
             for file in uploaded_files:
                 filename, issues = process_file(file)
                 
-                # 1. 화면 출력용 (HTML, 줄바꿈 <br> 적용, 시트별 색상 적용)
+                # 화면 출력용 HTML 구성
                 html_issues = "<br>".join([format_issue_for_html(issue) for issue in issues])
-                
-                # 2. 엑셀 다운로드용 (순수 텍스트, 줄바꿈 \n 적용)
-                excel_issues = "\n".join([f"• {issue}" for issue in issues])
-                
-                # 3. 이상 유무 판별 (성공 여부 확인)
                 is_success = "특이사항 없음" in "".join(issues)
                 
                 report_data.append({
                     "파일명": filename, 
-                    "검토 결과 (화면용)": html_issues,
-                    "검토 결과 (Excel용)": excel_issues,
+                    "검토 결과": html_issues,
                     "is_success": is_success
                 })
+                raw_issues_dict[filename] = issues
         
-        # 이상이 없는 파일이 맨 위에 오도록 내림차순 정렬
+        # 이상 없는 파일이 맨 위에 오도록 내림차순 정렬
         report_data.sort(key=lambda x: x["is_success"], reverse=True)
         
-        # DataFrame 생성
+        # DataFrame 생성 및 출력
         df_results = pd.DataFrame(report_data)
+        display_df = df_results[['파일명', '검토 결과']].copy()
         
-        # 화면에 표시할 칼럼만 추출
-        display_df = df_results[['파일명', '검토 결과 (화면용)']].copy()
-        display_df.rename(columns={'검토 결과 (화면용)': '검토 결과'}, inplace=True)
-        
-        # 이상 없는 파일명에 초록색 배경을 넣는 조건부 서식
         def highlight_success(row):
             if "특이사항 없음" in row['검토 결과']:
                 return ['background-color: #e6ffe6; color: #006600; font-weight: bold', '']
             else:
                 return [''] * len(row)
         
-        # 스타일 적용 및 HTML 테이블로 변환
         styled_df = display_df.style.apply(highlight_success, axis=1)
         html_table = styled_df.hide(axis="index").to_html(escape=False)
         
         st.subheader("📊 검토 결과")
-        # 변환된 HTML 테이블을 화면에 출력
         st.markdown(html_table, unsafe_allow_html=True)
-        
         st.write("---")
         
-        # --- 엑셀 파일 다운로드 기능 ---
-        download_df = df_results[['파일명', '검토 결과 (Excel용)']].copy()
-        download_df.rename(columns={'검토 결과 (Excel용)': '검토 결과'}, inplace=True)
-        
-        # 메모리 버퍼 생성 후 엑셀 데이터 쓰기
+        # --- 엑셀 파일 다운로드 생성 (openpyxl 활용하여 색상 및 줄바꿈 적용) ---
         excel_buffer = BytesIO()
-        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-            download_df.to_excel(writer, index=False, sheet_name='검토결과')
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "검토결과"
+        
+        # 헤더 설정
+        headers = ["파일명", "검토 결과"]
+        ws.append(headers)
+        header_font = Font(bold=True)
+        header_fill = PatternFill(start_color="FFF4F5F7", end_color="FFF4F5F7", fill_type="solid")
+        for col in range(1, 3):
+            cell = ws.cell(row=1, column=col)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center", vertical="center")
             
-            # 엑셀 파일 내 줄바꿈(\n)이 정상적으로 보이도록 서식(Wrap Text) 적용
-            worksheet = writer.sheets['검토결과']
-            for row in worksheet.iter_rows(min_row=2, max_col=2):
-                for cell in row:
-                    cell.alignment = openpyxl.styles.Alignment(wrapText=True, vertical='top')
+        # 데이터 채우기
+        for idx, row_data in enumerate(report_data, start=2):
+            filename = row_data["파일명"]
+            is_success = row_data["is_success"]
+            issues = raw_issues_dict[filename]
             
-            # 열 너비 조절 (가독성 향상)
-            worksheet.column_dimensions['A'].width = 30
-            worksheet.column_dimensions['B'].width = 100
+            # 파일명 셀 설정
+            cell_filename = ws.cell(row=idx, column=1, value=filename)
+            cell_filename.alignment = Alignment(vertical='top', wrapText=True)
+            if is_success:
+                cell_filename.fill = PatternFill(start_color="FFE6FFE6", end_color="FFE6FFE6", fill_type="solid")
+                cell_filename.font = Font(color="FF006600", bold=True)
+                
+            # 검토 결과 셀 (Rich Text 및 줄바꿈 적용)
+            cell_result = ws.cell(row=idx, column=2)
+            cell_result.value = create_excel_rich_text(issues)
+            cell_result.alignment = Alignment(vertical='top', wrapText=True)
             
+        # 열 너비 설정
+        ws.column_dimensions['A'].width = 40
+        ws.column_dimensions['B'].width = 100
+        
+        wb.save(excel_buffer)
+        
         # 다운로드 버튼
         st.download_button(
             label="📥 검토 결과 다운로드 (Excel)",
