@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import openpyxl
 import re
+from io import BytesIO
 
 def extract_numbers_from_bracket(text):
     """문자열에서 괄호 안의 숫자를 찾아 합산합니다."""
@@ -166,8 +167,8 @@ if uploaded_files:
                 # 1. 화면 출력용 (HTML, 줄바꿈 <br> 적용, 시트별 색상 적용)
                 html_issues = "<br>".join([format_issue_for_html(issue) for issue in issues])
                 
-                # 2. CSV 다운로드용 (순수 텍스트, 줄바꿈 \n 적용 - 엑셀에서 보기 편하도록)
-                csv_issues = "\n".join([f"• {issue}" for issue in issues])
+                # 2. 엑셀 다운로드용 (순수 텍스트, 줄바꿈 \n 적용)
+                excel_issues = "\n".join([f"• {issue}" for issue in issues])
                 
                 # 3. 이상 유무 판별 (성공 여부 확인)
                 is_success = "특이사항 없음" in "".join(issues)
@@ -175,7 +176,7 @@ if uploaded_files:
                 report_data.append({
                     "파일명": filename, 
                     "검토 결과 (화면용)": html_issues,
-                    "검토 결과 (CSV용)": csv_issues,
+                    "검토 결과 (Excel용)": excel_issues,
                     "is_success": is_success
                 })
         
@@ -198,23 +199,37 @@ if uploaded_files:
         
         # 스타일 적용 및 HTML 테이블로 변환
         styled_df = display_df.style.apply(highlight_success, axis=1)
-        # hide(axis="index")를 통해 인덱스 번호 숨김 처리
         html_table = styled_df.hide(axis="index").to_html(escape=False)
         
         st.subheader("📊 검토 결과")
-        # 변환된 HTML 테이블을 화면에 출력 (HTML 태그가 정상 렌더링 됨)
+        # 변환된 HTML 테이블을 화면에 출력
         st.markdown(html_table, unsafe_allow_html=True)
         
         st.write("---")
         
-        # 결과 다운로드 기능 (CSV에는 HTML 태그가 들어가면 지저분하므로 텍스트 전용 데이터 사용)
-        download_df = df_results[['파일명', '검토 결과 (CSV용)']].copy()
-        download_df.rename(columns={'검토 결과 (CSV용)': '검토 결과'}, inplace=True)
-        csv = download_df.to_csv(index=False, encoding='utf-8-sig')
+        # --- 엑셀 파일 다운로드 기능 ---
+        download_df = df_results[['파일명', '검토 결과 (Excel용)']].copy()
+        download_df.rename(columns={'검토 결과 (Excel용)': '검토 결과'}, inplace=True)
         
+        # 메모리 버퍼 생성 후 엑셀 데이터 쓰기
+        excel_buffer = BytesIO()
+        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+            download_df.to_excel(writer, index=False, sheet_name='검토결과')
+            
+            # 엑셀 파일 내 줄바꿈(\n)이 정상적으로 보이도록 서식(Wrap Text) 적용
+            worksheet = writer.sheets['검토결과']
+            for row in worksheet.iter_rows(min_row=2, max_col=2):
+                for cell in row:
+                    cell.alignment = openpyxl.styles.Alignment(wrapText=True, vertical='top')
+            
+            # 열 너비 조절 (가독성 향상)
+            worksheet.column_dimensions['A'].width = 30
+            worksheet.column_dimensions['B'].width = 100
+            
+        # 다운로드 버튼
         st.download_button(
-            label="📥 검토 결과 다운로드 (CSV)",
-            data=csv,
-            file_name="운영계획서_검토결과.csv",
-            mime="text/csv"
+            label="📥 검토 결과 다운로드 (Excel)",
+            data=excel_buffer.getvalue(),
+            file_name="운영계획서_검토결과.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
