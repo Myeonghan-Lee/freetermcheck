@@ -3,12 +3,8 @@ import pandas as pd
 import openpyxl
 import re
 from io import BytesIO
-
-# --- 새로 추가된 openpyxl 스타일 및 서식 모듈 ---
-from openpyxl.styles import PatternFill, Font, Alignment
-from openpyxl.cell.text import InlineFont
 from openpyxl.cell.rich_text import TextBlock, CellRichText
-
+from openpyxl.cell.text import InlineFont
 
 def extract_numbers_from_bracket(text):
     """문자열에서 괄호 안의 숫자를 찾아 합산합니다."""
@@ -135,6 +131,7 @@ def process_file(file):
         
     return filename, results
 
+
 # --- HTML 스타일 적용 함수 ---
 def format_issue_for_html(issue):
     """시트 이름별로 다른 글자 색상을 적용하고 HTML 태그로 감쌉니다."""
@@ -146,10 +143,48 @@ def format_issue_for_html(issue):
         issue = issue.replace("[3. 예산 계획서]", "<strong style='color:#de350b;'>[3. 예산 계획서]</strong>")
     return f"• {issue}"
 
+# --- 엑셀 Rich Text 적용 함수 ---
+def build_rich_text_for_excel(issues):
+    """openpyxl CellRichText를 활용해 엑셀 셀 내 특정 텍스트의 색상을 변경하고 줄바꿈을 처리합니다."""
+    elements = []
+    
+    # 폰트 색상 및 굵기 설정 (HTML 코드와 동일한 계열)
+    font_blue = InlineFont(color="0052CC", b=True)
+    font_green = InlineFont(color="00875A", b=True)
+    font_red = InlineFont(color="DE350B", b=True)
+    
+    for i, issue in enumerate(issues):
+        text = f"• {issue}"
+        
+        if "[1.학교운영 현황]" in text:
+            parts = text.split("[1.학교운영 현황]")
+            if parts[0]: elements.append(parts[0])
+            elements.append(TextBlock(font_blue, "[1.학교운영 현황]"))
+            if parts[1]: elements.append(parts[1])
+        elif "[2. 자유학기 활동]" in text:
+            parts = text.split("[2. 자유학기 활동]")
+            if parts[0]: elements.append(parts[0])
+            elements.append(TextBlock(font_green, "[2. 자유학기 활동]"))
+            if parts[1]: elements.append(parts[1])
+        elif "[3. 예산 계획서]" in text:
+            parts = text.split("[3. 예산 계획서]")
+            if parts[0]: elements.append(parts[0])
+            elements.append(TextBlock(font_red, "[3. 예산 계획서]"))
+            if parts[1]: elements.append(parts[1])
+        else:
+            elements.append(text)
+            
+        # 마지막 항목이 아니면 줄바꿈 추가
+        if i < len(issues) - 1:
+            elements.append("\n")
+            
+    # 빈 문자열 방지 및 리치 텍스트 객체 반환
+    return CellRichText([e for e in elements if e])
+
+
 # --- Streamlit UI ---
 st.set_page_config(page_title="자유학기 운영계획서 검토기", layout="wide")
 
-# 테이블 전체 넓이 및 테두리 스타일을 위한 CSS 주입
 st.markdown("""
 <style>
 table { width: 100%; border-collapse: collapse; }
@@ -173,16 +208,13 @@ if uploaded_files:
                 # 1. 화면 출력용 (HTML, 줄바꿈 <br> 적용, 시트별 색상 적용)
                 html_issues = "<br>".join([format_issue_for_html(issue) for issue in issues])
                 
-                # 2. 엑셀 다운로드용 (순수 텍스트, 줄바꿈 \n 적용)
-                excel_issues = "\n".join([f"• {issue}" for issue in issues])
-                
-                # 3. 이상 유무 판별 (성공 여부 확인)
+                # 2. 이상 유무 판별 (성공 여부 확인)
                 is_success = "특이사항 없음" in "".join(issues)
                 
                 report_data.append({
                     "파일명": filename, 
                     "검토 결과 (화면용)": html_issues,
-                    "검토 결과 (Excel용)": excel_issues,
+                    "raw_issues": issues, # 엑셀 Rich Text 변환을 위해 원본 리스트 보존
                     "is_success": is_success
                 })
         
@@ -192,104 +224,44 @@ if uploaded_files:
         # DataFrame 생성
         df_results = pd.DataFrame(report_data)
         
-        # 화면에 표시할 칼럼만 추출
+        # --- 화면 출력 처리 ---
         display_df = df_results[['파일명', '검토 결과 (화면용)']].copy()
         display_df.rename(columns={'검토 결과 (화면용)': '검토 결과'}, inplace=True)
         
-        # 이상 없는 파일명에 초록색 배경을 넣는 조건부 서식
         def highlight_success(row):
             if "특이사항 없음" in row['검토 결과']:
                 return ['background-color: #e6ffe6; color: #006600; font-weight: bold', '']
             else:
                 return [''] * len(row)
         
-        # 스타일 적용 및 HTML 테이블로 변환
         styled_df = display_df.style.apply(highlight_success, axis=1)
         html_table = styled_df.hide(axis="index").to_html(escape=False)
         
         st.subheader("📊 검토 결과")
-        # 변환된 HTML 테이블을 화면에 출력
         st.markdown(html_table, unsafe_allow_html=True)
         
         st.write("---")
         
-        # --- 엑셀 파일 다운로드 기능 (스타일 적용) ---
-        download_df = df_results[['파일명', '검토 결과 (Excel용)']].copy()
-        download_df.rename(columns={'검토 결과 (Excel용)': '검토 결과'}, inplace=True)
-        
-        # 메모리 버퍼 생성 후 엑셀 데이터 쓰기
+        # --- 엑셀 파일 다운로드 처리 ---
         excel_buffer = BytesIO()
         with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+            download_df = df_results[['파일명']].copy()
+            download_df['검토 결과'] = "" # 텍스트가 들어갈 자리 임시 생성
             download_df.to_excel(writer, index=False, sheet_name='검토결과')
             
             worksheet = writer.sheets['검토결과']
             
-            # 1. 헤더 스타일 적용 (굵게, 옅은 회색 배경)
-            header_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
-            for cell in worksheet[1]:
-                cell.font = Font(bold=True)
-                cell.fill = header_fill
-                cell.alignment = Alignment(horizontal="center", vertical="center")
-
-            # 2. Rich Text 폰트 설정 (ARGB 포맷)
-            font_1 = InlineFont(color='FF0052CC', b=True) # [1.학교운영 현황] - 파란색
-            font_2 = InlineFont(color='FF00875A', b=True) # [2. 자유학기 활동] - 초록색
-            font_3 = InlineFont(color='FFDE350B', b=True) # [3. 예산 계획서] - 빨간색
-
-            # 3. 데이터 셀 순회 및 스타일 적용
-            for row in worksheet.iter_rows(min_row=2, max_col=2):
-                filename_cell = row[0]
-                result_cell = row[1]
+            # 정렬된 df_results를 순회하며 Rich Text 삽입
+            for row_idx, (_, row) in enumerate(df_results.iterrows(), start=2):
+                cell = worksheet.cell(row=row_idx, column=2)
                 
-                text_val = result_cell.value
-                if not text_val: 
-                    continue
+                # 위에서 정의한 엑셀 서식 적용 함수 호출
+                cell.value = build_rich_text_for_excel(row['raw_issues'])
                 
-                # 특이사항이 없는 경우 (화면과 동일하게 행 전체 초록색 배경 처리)
-                if "특이사항 없음" in text_val:
-                    success_fill = PatternFill(start_color="E6FFE6", end_color="E6FFE6", fill_type="solid")
-                    success_font = Font(color="006600", bold=True)
-                    filename_cell.fill = success_fill
-                    filename_cell.font = success_font
-                    result_cell.fill = success_fill
-                    result_cell.font = success_font
-                
-                # 문제가 있는 경우 (항목별 태그 색상 변경)
-                else:
-                    lines = text_val.split('\n')
-                    rich_elements = []
-                    
-                    for i, line in enumerate(lines):
-                        if "[1.학교운영 현황]" in line:
-                            idx = line.find("[1.학교운영 현황]") + len("[1.학교운영 현황]")
-                            rich_elements.append(TextBlock(font=font_1, text=line[:idx]))
-                            if line[idx:]: rich_elements.append(line[idx:])
-                        
-                        elif "[2. 자유학기 활동]" in line:
-                            idx = line.find("[2. 자유학기 활동]") + len("[2. 자유학기 활동]")
-                            rich_elements.append(TextBlock(font=font_2, text=line[:idx]))
-                            if line[idx:]: rich_elements.append(line[idx:])
-                        
-                        elif "[3. 예산 계획서]" in line:
-                            idx = line.find("[3. 예산 계획서]") + len("[3. 예산 계획서]")
-                            rich_elements.append(TextBlock(font=font_3, text=line[:idx]))
-                            if line[idx:]: rich_elements.append(line[idx:])
-                        
-                        else:
-                            if line: rich_elements.append(line)
-                        
-                        # 줄바꿈 유지
-                        if i < len(lines) - 1:
-                            rich_elements.append("\n")
-                    
-                    if rich_elements:
-                        result_cell.value = CellRichText(rich_elements)
-                
-                # 셀 내용 자동 줄바꿈 및 위쪽 정렬 적용
-                filename_cell.alignment = Alignment(wrapText=True, vertical='top')
-                result_cell.alignment = Alignment(wrapText=True, vertical='top')
+                # 엑셀 파일 내 줄바꿈(\n)이 정상적으로 보이도록 서식(Wrap Text) 적용
+                cell.alignment = openpyxl.styles.Alignment(wrapText=True, vertical='top')
             
-            # 4. 열 너비 조절 (가독성 향상)
+            # 열 너비 조절 (가독성 향상)
             worksheet.column_dimensions['A'].width = 30
             worksheet.column_dimensions['B'].width = 100
             
