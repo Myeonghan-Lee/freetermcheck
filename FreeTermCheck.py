@@ -208,7 +208,9 @@ if uploaded_files:
         st.write("---")
         
 # --- 엑셀 파일 다운로드 기능 ---
-        from openpyxl.styles import Font, Alignment # 상단에 추가해도 되지만 편의상 여기 위치
+        from openpyxl.styles import Font, Alignment, PatternFill
+        from openpyxl.cell.rich_text import CellRichText, TextBlock
+        from openpyxl.cell.text import InlineFont
 
         download_df = df_results[['파일명', '검토 결과 (Excel용)']].copy()
         download_df.rename(columns={'검토 결과 (Excel용)': '검토 결과'}, inplace=True)
@@ -217,45 +219,37 @@ if uploaded_files:
         excel_buffer = BytesIO()
         with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
             download_df.to_excel(writer, index=False, sheet_name='검토결과')
-            
-            # 스타일 적용을 위해 워크시트 가져오기
             worksheet = writer.sheets['검토결과']
             
-            # 색상 코드 정의 (화면과 동일하게 세팅)
-            color_map = {
-                "[1.학교운영 현황]": "0052cc", # 파랑
-                "[2. 자유학기 활동]": "00875a", # 초록
-                "[3. 예산 계획서]": "de350b"   # 빨강
-            }
+            # --- 서식 정의 ---
+            # 1. 셀 내 특정 단어 강조용 폰트 (HTML 화면과 동일한 색상 및 볼드 적용)
+            font_1 = InlineFont(color="0052cc", b=True) # 1.학교운영 현황 (파랑)
+            font_2 = InlineFont(color="00875a", b=True) # 2. 자유학기 활동 (초록)
+            font_3 = InlineFont(color="de350b", b=True) # 3. 예산 계획서 (빨강)
             
-            for row_idx, row in enumerate(worksheet.iter_rows(min_row=2, max_col=2), start=2):
+            # 2. '특이사항 없음' 시 행 전체에 적용할 서식
+            success_fill = PatternFill(start_color="e6ffe6", end_color="e6ffe6", fill_type="solid")
+            success_font = Font(color="006600", bold=True)
+            
+            for row in worksheet.iter_rows(min_row=2, max_col=2):
                 filename_cell = row[0]
                 result_cell = row[1]
                 
-                # 1. 공통 서식 (줄바꿈 및 정렬)
-                result_cell.alignment = Alignment(wrapText=True, vertical='top')
+                # 공통 서식 (줄바꿈 및 위쪽 맞춤)
                 filename_cell.alignment = Alignment(vertical='top')
+                result_cell.alignment = Alignment(wrapText=True, vertical='top')
 
-                # 2. 내용에 따른 글자 색상 적용 (가장 먼저 발견되는 키워드 기준)
                 cell_text = str(result_cell.value)
                 
+                # '특이사항 없음'인 경우: 화면과 같이 행 전체에 연한 초록색 배경과 글자색 적용
                 if "특이사항 없음" in cell_text:
-                    result_cell.font = Font(color="006600", bold=True)
-                    filename_cell.font = Font(color="006600", bold=True)
+                    for cell in row:
+                        cell.fill = success_fill
+                        cell.font = success_font
                 else:
-                    for keyword, color in color_map.items():
-                        if keyword in cell_text:
-                            result_cell.font = Font(color=color)
-                            break # 첫 번째 일치하는 카테고리 색상 적용
-
-            # 열 너비 조절
-            worksheet.column_dimensions['A'].width = 30
-            worksheet.column_dimensions['B'].width = 100
-            
-        # 다운로드 버튼
-        st.download_button(
-            label="📥 검토 결과 다운로드 (Excel)",
-            data=excel_buffer.getvalue(),
-            file_name="운영계획서_검토결과.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+                    # 문제가 있는 경우: 줄바꿈 단위로 분리하여 해당 키워드에만 색상 입히기
+                    rich_text_elements = []
+                    lines = cell_text.split('\n')
+                    
+                    for i, line in enumerate(lines):
+                        if "[1.학교운영 현황]" in line:
